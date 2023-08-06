@@ -8,7 +8,7 @@ import nibabel as nib
 from nilearn import signal
 from fmralign._utils import piecewise_transform
 from fmralign.pairwise_alignment import fit_one_piece
-
+import warnings
 
 def generate_Xi_Yi(labels, X, Y, verbose):
     """ Generate source and target data X_i and Y_i for each piece i.
@@ -94,7 +94,7 @@ class SurfacePairwiseAlignment(BaseEstimator, TransformerMixin):
     regions independently.
     """
 
-    def __init__(self, alignment_method, clustering, standardize=False, detrend=False, low_pass=None, high_pass=None, t_r=None, n_jobs=1, parallel_type='threads',verbose=0):
+    def __init__(self, alignment_method, clustering, n_jobs=1, parallel_type='threads',verbose=0):
         """
         If n_pieces > 1, decomposes the images into regions \
         and align each source/target region independantly.
@@ -109,23 +109,8 @@ class SurfacePairwiseAlignment(BaseEstimator, TransformerMixin):
             'ridge_cv', 'permutation', 'diagonal'
             * or an instance of one of alignment classes
             (imported from functional_alignment.alignment_methods)
-        clustering : path or Gifti
-            image used as predefined clustering
-        standardize: boolean, optional (default = False)
-            If standardize is True, the time-series are centered and normed:
-            their variance is put to 1 in the time dimension.
-        detrend: boolean, optional (default = None)
-            This parameter is passed to nilearn.signal.clean.
-            Please see the related documentation for details
-        low_pass: None or float, optional (default = None)
-            This parameter is passed to nilearn.signal.clean.
-            Please see the related documentation for details.
-        high_pass: None or float, optional (default = None)
-            This parameter is passed to nilearn.signal.clean.
-            Please see the related documentation for details.
-        t_r: float, optional (default = None)
-            This parameter is passed to nilearn.signal.clean.
-            Please see the related documentation for details.
+        clustering : numpy int array (n_vertices)
+            Parcellation of vertices in clusters. Each vertex is assigned a parcel number
         n_jobs: integer, optional (default = 1)
             The number of CPUs to use to do the computation. -1 means
             'all CPUs', -2 'all CPUs but one', and so on.
@@ -136,55 +121,32 @@ class SurfacePairwiseAlignment(BaseEstimator, TransformerMixin):
         """
         self.alignment_method = alignment_method
         self.clustering = clustering
-        self.standardize = standardize
-        self.detrend = detrend
-        self.low_pass = low_pass
-        self.high_pass = high_pass
-        self.t_r = t_r
         self.n_jobs = n_jobs
         self.parallel_type = parallel_type
         self.verbose = verbose
-
-    def _load_clean_one(self, X):
-        LEN_FSAV = 163842
-        X_data = nib.load(X).agg_data()
-        X_ = signal.clean(np.asarray(X_data), detrend=self.detrend, high_pass=self.high_pass,
-                          low_pass=self.low_pass, standardize=self.standardize, t_r=self.t_r, ensure_finite=True)
-        if X_.shape[0] == LEN_FSAV:
-            return X_.T
-        else:
-            return X_
-
-    def load_clean(self, X):
-        if isinstance(X, (list, np.ndarray)):
-            return np.vstack([self._load_clean_one(xi)for xi in X])
-        else:
-            return self._load_clean_one(X)
 
     def fit(self, X, Y):
         """Fit data X and Y and learn transformation to map X to Y
 
         Parameters
         ----------
-        X: Niimg-like object
-            Source data.
+        X: source data, numpy array (n_samples, n_vertices)
 
-        Y: Niimg-like object
-            Target data
+        Y: target data, numpy array (n_samples, n_vertices)
 
         Returns
         -------
         self
         """
 
-        #
-        #self.masker_ = check_embedded_nifti_masker(self)
-
-        X_ = self.load_clean(X)
-        Y_ = self.load_clean(Y)
-
+        from collections import Counter
+        ntimepoints=X.shape[0]
+        nVerticesInLargestCluster = Counter(self.clustering)[0]
+        if ntimepoints < nVerticesInLargestCluster:
+            warnings.warn(f'UserWarning: ntimepoints {ntimepoints} < nVerticesInLargestCluster {nVerticesInLargestCluster}')
+        
         self.labels_, self.fit_ = fit_parcellation(
-            X_, Y_, self.alignment_method, self.clustering, self.n_jobs, self.parallel_type, self.verbose)
+            X, Y, self.alignment_method, self.clustering, self.n_jobs, self.parallel_type, self.verbose)
         # not list here unlike pairwise
 
         return self
@@ -194,18 +156,14 @@ class SurfacePairwiseAlignment(BaseEstimator, TransformerMixin):
 
         Parameters
         ----------
-        X: Niimg-like object
-            Source data
+        X: source data, numpy array (n_samples, n_vertices)
 
         Returns
         -------
-        X_transform: Niimg-like object
-            Predicted data
+        X_transform: predicted data, numpy array (n_samples, n_vertices)
         """
-        X_ = self.load_clean(X)
-
         X_transform = piecewise_transform(
-            self.labels_, self.fit_, X_)
+            self.labels_, self.fit_, X)
 
         return X_transform
 
